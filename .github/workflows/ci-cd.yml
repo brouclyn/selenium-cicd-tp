@@ -1,52 +1,84 @@
-name: CI/CD Pipeline with Selenium Tests
+name: Advanced CI/CD Pipeline (Multi-browser + Notifications + Tag Deploy)
 
 on:
   push:
     branches: [ main, develop ]
+    tags:
+      - "v*"
   pull_request:
     branches: [ main ]
 
 jobs:
   test:
+    name: Tests (${{ matrix.browser }})
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [ chrome, firefox ]
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: "3.9"
 
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tests/requirements.txt
+
+      # Chrome stable (pas nécessaire pour firefox)
       - name: Install Chrome
+        if: matrix.browser == 'chrome'
         run: |
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
 
-      - name: Install dependencies
-        run: |
-          cd tests
-          pip install -r requirements.txt
+      # Firefox est déjà présent sur ubuntu-latest la plupart du temps.
+      # Si un jour ça saute, tu pourras l'installer ici.
 
-      - name: Run Selenium Tests
+      - name: Run Selenium tests
         env:
           CI: true
+          BROWSER: ${{ matrix.browser }}
         run: |
-          cd tests
-          python -m pytest test_selenium.py -v --html=../test-report.html --self-contained-html
+          python -m pytest tests/test_selenium.py -v \
+            --html=report-${{ matrix.browser }}.html --self-contained-html
 
-      - name: Upload test results
-        uses: actions/upload-artifact@v3
+      - name: Upload test report
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: test-results
-          path: test-report.html
+          name: test-report-${{ matrix.browser }}
+          path: report-${{ matrix.browser }}.html
 
-  deploy:
+  notify:
+    name: Notify on failure
     needs: test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: failure()
+
+    steps:
+      - name: Notify Slack (on failure)
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "❌ CI failed on *${{ github.repository }}*\nBranch/Ref: `${{ github.ref }}`\nCommit: `${{ github.sha }}`\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  deploy:
+    name: Deploy (tags only)
+    needs: test
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
 
     steps:
       - name: Checkout code
